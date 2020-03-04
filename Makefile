@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-lX11
+CFLAGS=-lX11 -lasound
 LDFLAGS=
 
 .PHONY: clean all

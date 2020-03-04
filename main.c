@@ -1,114 +1,124 @@
 #include <stdio.h>
 #include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <X11/Xos.h>
+#include <linux/input.h>
+#include <alsa/asoundlib.h>
 
-char *key_name[] = {
-    "first",
-    "second (or middle)",
-    "third",
-    "wheel up",
-    "wheel down"
-};
+#define STEP_PRC 8
 
-Display *dis;
-int screen;
-Window win;
-GC gc;
+void volume_change(int delta) {
+    long min, max;
+    snd_mixer_t *handle;
+    snd_mixer_selem_id_t *sid;
+    const char *card = "default";
+    const char *selem_name = "Master";
+    int err;
+
+    err = snd_mixer_open(&handle, 0);
+    if (err>0) {
+        printf("err: snd_mixer_open");
+        return;
+    }
+    err = snd_mixer_attach(handle, card);
+    if (err>0) {
+        printf("err: snd_mixer_attach");
+        return;
+    }
+    err = snd_mixer_selem_register(handle, NULL, NULL);
+    if (err>0) {
+        printf("err: snd_mixer_selem_register");
+        return;
+    }
+    err = snd_mixer_load(handle);
+    if (err>0) {
+        printf("err: snd_mixer_load");
+        return;
+    }
+
+    snd_mixer_selem_id_alloca(&sid);
+    snd_mixer_selem_id_set_index(sid, 0);
+    snd_mixer_selem_id_set_name(sid, selem_name);
+    snd_mixer_elem_t* elem = snd_mixer_find_selem(handle, sid);
+    fprintf(stdout,"elem=%p\n", elem);
+
+    long vol;
+    snd_mixer_selem_get_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT, &vol);
+
+    snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
+    fprintf(stdout, "min: %ld, max: %ld, vol: %ld\n", min, max, vol);
+    vol += delta * STEP_PRC*(max-min) / 100;
+    if (vol < min) vol = min;
+    if (vol > max) vol = max;
+
+    snd_mixer_selem_set_playback_volume_all(elem, vol);
+
+    snd_mixer_close(handle);
+}
+
+int screen_boundaries(void) {
+    int number_of_screens;
+    int i;
+    Bool result;
+    Window *root_windows;
+    Window window_returned;
+    int root_x, root_y;
+    int win_x, win_y;
+    unsigned int mask_return;
+
+    Display *display = XOpenDisplay(NULL);
+    Screen*  s = DefaultScreenOfDisplay(display);
+    assert(display);
+    //XSetErrorHandler(_XlibErrorHandler);
+    number_of_screens = XScreenCount(display);
+    root_windows = malloc(sizeof(Window) * number_of_screens);
+    for (i = 0; i < number_of_screens; i++) {
+        root_windows[i] = XRootWindow(display, i);
+    }
+    int max_x, max_y;
+    for (i = 0; i < number_of_screens; i++) {
+        result = XQueryPointer(display, root_windows[i], &window_returned,
+                &window_returned, &root_x, &root_y, &win_x, &win_y,
+                &mask_return);
+        if (result == True) {
+            max_x = s->width;
+            max_y = s->height;
+            break;
+        }
+    }
+    if (result != True) {
+        fprintf(stderr, "No mouse found.\n");
+        return -1;
+    }
+    free(root_windows);
+    XCloseDisplay(display);
+    
+    return root_x==0 || root_x == max_x-1 || root_y==0 || root_y == max_y-1;
+}
+
+// Config:
+//   - event file (TODO: determine automatically)
+//   - volume OSD position
+//   - volume step
+//   - additional key combinations
+//   - app list to treat volume wheel directly
 
 int main(int argc, char **argv)
 {
-    Display *display;
-    XEvent xevent;
-    Window window;
+    int fid = open(argv[1], O_RDONLY);
+    if (fid == 0) {
+        fprintf(stderr, "Could not open %s device\n", argv[1]);
+        return 1;
+    }
+    fprintf(stdout, "Opened %s device\n", argv[1]);
 
-    if( (display = XOpenDisplay(NULL)) == NULL )
-        return -1;
-
-
-    window = DefaultRootWindow(display);
-    XAllowEvents(display, AsyncBoth, CurrentTime);
-
-    XGrabPointer(display, 
-                 window,
-                 1, 
-                 PointerMotionMask | ButtonPressMask, // | ButtonReleaseMask , 
-                 GrabModeAsync,
-                 GrabModeAsync, 
-                 None,
-                 None,
-                 CurrentTime);
-
+    int nbytes;
+    struct input_event event;
     while(1) {
-        XNextEvent(display, &xevent);
-
-        switch (xevent.type) {
-            case MotionNotify:
-                printf("Mouse move      : [%d, %d]\n", xevent.xmotion.x_root, xevent.xmotion.y_root);
-                break;
-            case ButtonPress:
-                printf("Button pressed  : %s\n", key_name[xevent.xbutton.button - 1]);
-                break;
-            case ButtonRelease:
-                printf("Button released : %s\n", key_name[xevent.xbutton.button - 1]);
-                break;
+        nbytes = read(fid, &event, sizeof(event));
+        if (event.code == REL_WHEEL) {
+            if (screen_boundaries()) {
+                volume_change(event.value);
+            }
         }
     }
-
     return 0;
-}
-
-
-void init_x() {
-	unsigned long black,white;
-
-	/* use the information from the environment variable DISPLAY 
-	   to create the X connection:
-	*/	
-	dis = XOpenDisplay((char *)0);
-   	screen = DefaultScreen(dis);
-	black = BlackPixel(dis,screen),	/* get color black */
-	white = WhitePixel(dis, screen);  /* get color white */
-
-	/* once the display is initialized, create the window.
-	   This window will be have be 200 pixels across and 300 down.
-	   It will have the foreground white and background black
-	*/
-   	win=XCreateSimpleWindow(dis,DefaultRootWindow(dis),0,0,	
-		200, 300, 5, white, black);
-
-	/* here is where some properties of the window can be set.
-	   The third and fourth items indicate the name which appears
-	   at the top of the window and the name of the minimized window
-	   respectively.
-	*/
-	XSetStandardProperties(dis,win,"My Window","HI!",None,NULL,0,NULL);
-
-	/* this routine determines which types of input are allowed in
-	   the input.  see the appropriate section for details...
-	*/
-	XSelectInput(dis, win, ExposureMask|ButtonPressMask|KeyPressMask);
-
-	/* create the Graphics Context */
-        gc=XCreateGC(dis, win, 0,0);        
-
-	/* here is another routine to set the foreground and background
-	   colors _currently_ in use in the window.
-	*/
-	XSetBackground(dis,gc,white);
-	XSetForeground(dis,gc,black);
-
-	/* clear the window and bring it on top of the other windows */
-	XClearWindow(dis, win);
-	XMapRaised(dis, win);
-};
-
-void close_x() {
-/* it is good programming practice to return system resources to the 
-   system...
-*/
-	XFreeGC(dis, gc);
-	XDestroyWindow(dis,win);
-	XCloseDisplay(dis);	
-//	exit(1);				
 }

@@ -7,6 +7,7 @@
 ## Getting started
 
 ```
+$ sudo apt-get install -y libasound2-dev libx11-dev
 $ git clone https://github.com/bhmj/msv3
 $ make all
 $ ./bin/msv3
